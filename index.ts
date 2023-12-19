@@ -16,7 +16,7 @@ import type {
     ArtifactImage,
 } from './@types'
 // import WebSocket, {WebSocketServer} from 'ws'
-import {v4 as uuidv4} from 'uuid'
+// import {v4 as uuidv4} from 'uuid'
 // import {Server} from 'socket.io'
 import * as url from 'url'
 const __filename = url.fileURLToPath(import.meta.url)
@@ -110,7 +110,7 @@ const shrinkAndDownload = async ({
               extension
             : localMediaPath
     try {
-        // await downloadFile(`${media}${query}`, `${mediaDir}${localMediaPath}`)
+        await downloadFile(`${media}${query}`, `${mediaDir}${localMediaPath}`)
         return localMediaPath
     } catch (err) {
         console.log(err)
