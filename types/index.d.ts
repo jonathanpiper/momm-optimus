@@ -48,8 +48,8 @@ export interface Rail {
   export interface MediaItem {
     title: string
     caption?: string
-    thumbnail: string
-    clip: string
+    thumbnail:  string
+    clip:  string
     summary?: string
     credit?: string
     artist?: string
