@@ -7,16 +7,21 @@ import { emptyDirSync } from "fs-extra"
 import { createServer } from "http"
 import type { Rail, Dwell, Content, Item, InlineAudioClip, StoryMedia, MediaItem, ArtifactImage } from "./types/index.js"
 import * as url from "url"
-const __filename = url.fileURLToPath(import.meta.url)
+// const __filename = url.fileURLToPath(import.meta.url)
 const __dirname = url.fileURLToPath(new URL(".", import.meta.url))
+import { logger } from "./logger"
+import 'dotenv/config'
 
 const app = express()
 const server = createServer(app)
 
-server.listen(3000)
+const PORT = 3000
 
-const IMAGE_URL_PREFIX = "https://cdn.sanity.io/images/4udqswqp/production/"
-const MEDIA_URL_PREFIX = "https://cdn.sanity.io/files/4udqswqp/production/"
+server.listen(PORT)
+logger.info(`Optimus is active on port ${PORT}.`)
+
+const IMAGE_URL_PREFIX = process.env.PRODUCTION_IMAGE_URL || ''
+const MEDIA_URL_PREFIX = process.env.PRODUCTION_FILE_URL || ''
 let MEDIA_DIR_PREFIX = `${__dirname}files/`
 let mediaDir: string
 let filesNeeded: string[] = []
@@ -66,7 +71,7 @@ const shrinkAndDownload = async ({ media, flag = "", height }: { media: string; 
     try {
         extension = media.substring(media.lastIndexOf("."))
     } catch (err) {
-        console.log("Could not parse media string.", err)
+        logger.warn("Could not parse media string.", err)
     }
     let localMediaPath = [".jpg", ".svg", ".png"].includes(extension) ? media.replace(IMAGE_URL_PREFIX, "") : media.replace(MEDIA_URL_PREFIX, "")
     localMediaPath =
@@ -76,17 +81,20 @@ const shrinkAndDownload = async ({ media, flag = "", height }: { media: string; 
         await downloadFile(`${media}${query}`, `${mediaDir}${localMediaPath}`)
         return localMediaPath
     } catch (err) {
-        console.log(err)
+        logger.error(err)
         return ""
     }
 }
+app.post("/api/deploy", async (req, res) => {
+    console.log(req.body)
+})
 
 app.post("/api/transform", async (req, res) => {
     try {
         const { railResult }: { railResult: Rail } = req.body
 
         if (!railResult) {
-            console.warn("No incoming rail content detected.")
+            logger.warn("No incoming rail content detected.")
             res.status(400).send("Malformed or incomplete rail content.")
             return
         }
@@ -97,13 +105,14 @@ app.post("/api/transform", async (req, res) => {
                 fs.mkdirSync(mediaDir)
             }
         } catch (err) {
+            logger.error(`Could not initialize local directory ${mediaDir}`)
             res.status(500).send(`Could not initialize local directory on server. Error: ${err}`)
             return
         }
 
         try {
             railResult.dwell.images = await Promise.all(
-                railResult.dwell.images.map(async (img: string, i: number) => {
+                railResult.dwell.images.map(async (img: string) => {
                     const path = await shrinkAndDownload({
                         media: img,
                     })
@@ -217,9 +226,9 @@ app.post("/api/transform", async (req, res) => {
                     return content
                 })
             )
-            console.log(`Rail definition transformed for local files, ${filesNeeded.length} files stored.`)
+            logger.info(`Rail definition transformed for local files, ${filesNeeded.length} files stored.`)
         } catch (err) {
-            console.log(err)
+            logger.error(err)
             res.status(500).send(`Could not process incoming rail definition. Error: ${err}`)
             return
         }
@@ -228,13 +237,13 @@ app.post("/api/transform", async (req, res) => {
             fs.writeFile(`${mediaDir}rail.json`, JSON.stringify(railResult), (err) => {
                 if (err) throw err
                 filesNeeded.push(`${mediaDir}rail.json`)
-                console.log(`Rail definition for ${railResult.identifier} written to rail.json.`)
+                logger.info(`Rail definition for ${railResult.identifier} written to rail.json.`)
                 fs.readdir(mediaDir, (err, files) => {
                     const filesToRemove: string[] = files.filter((n: string) => {
                         return !filesNeeded.includes(`${mediaDir}${n}`)
                     })
                     filesToRemove.forEach((n: string) => {
-                        console.log(`${n} is no longer needed, deleting.`)
+                        logger.info(`${n} is no longer needed, deleting.`)
                         fs.unlinkSync(`${mediaDir}${n}`)
                     })
                 })
@@ -248,7 +257,7 @@ app.post("/api/transform", async (req, res) => {
             `Rail definition for ${railResult.identifier} successfully created and assets downloaded to local directory. Result: ${railResult}`
         )
     } catch (err) {
-        console.log(`Could not complete rail distribution. Error: ${err}`)
+        logger.error(`Could not complete rail distribution. Error: ${err}`)
         res.status(500).send(`Unable to prepare rail distribution. Error: ${err}`)
     }
 })
