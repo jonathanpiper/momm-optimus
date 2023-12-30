@@ -2,14 +2,13 @@ import express from "express"
 import cors from "cors"
 import bodyParser from "body-parser"
 import fs from "fs"
-import { downloadFile } from "./helper.js"
+import { downloadFile, logger } from "./helper.js"
 import { emptyDirSync } from "fs-extra"
 import { createServer } from "http"
 import type { Rail, Dwell, Content, Item, InlineAudioClip, StoryMedia, MediaItem, ArtifactImage } from "./types/index.js"
 import * as url from "url"
 // const __filename = url.fileURLToPath(import.meta.url)
 const __dirname = url.fileURLToPath(new URL(".", import.meta.url))
-import { logger } from "./logger"
 import 'dotenv/config'
 
 const app = express()
