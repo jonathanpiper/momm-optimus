@@ -1,40 +1,17 @@
 import express from "express"
-import cors from "cors"
-import bodyParser from "body-parser"
-import fs from "fs"
-import { downloadFile, logger } from "./helper.js"
-import { emptyDirSync } from "fs-extra"
-import { createServer } from "http"
-import type { Rail, Dwell, Content, Item, InlineAudioClip, StoryMedia, MediaItem, ArtifactImage } from "./types/index.js"
+const router = express.Router()
+import { downloadFile, logger } from "../utils/helper.js"
 import * as url from "url"
-// const __filename = url.fileURLToPath(import.meta.url)
 const __dirname = url.fileURLToPath(new URL(".", import.meta.url))
-import 'dotenv/config'
+import fs from "fs"
+import type { Rail, Dwell, Content, Item, InlineAudioClip, StoryMedia, MediaItem, ArtifactImage } from "../types/index.js"
 
-const app = express()
-const server = createServer(app)
-
-const PORT = 3000
-
-server.listen(PORT)
-logger.info(`Optimus is active on port ${PORT}.`)
+let mediaDir: string
+let filesNeeded: string[] = []
 
 const IMAGE_URL_PREFIX = process.env.PRODUCTION_IMAGE_URL || ''
 const MEDIA_URL_PREFIX = process.env.PRODUCTION_FILE_URL || ''
 let MEDIA_DIR_PREFIX = `${__dirname}files/`
-let mediaDir: string
-let filesNeeded: string[] = []
-
-if (!fs.existsSync(MEDIA_DIR_PREFIX)) {
-    fs.mkdirSync(MEDIA_DIR_PREFIX)
-}
-
-app.use(cors())
-app.use(bodyParser.json())
-
-app.get("/status", (req, res) => {
-    res.send("Online")
-})
 
 const shrinkAndDownload = async ({ media, flag = "", height }: { media: string; flag?: string; height?: number }) => {
     let query: string = ""
@@ -84,11 +61,15 @@ const shrinkAndDownload = async ({ media, flag = "", height }: { media: string; 
         return ""
     }
 }
-app.post("/api/deploy", async (req, res) => {
+
+router.post("/deploy", async (req, res) => {
     console.log(req.body)
 })
 
-app.post("/api/transform", async (req, res) => {
+router.post("/api/transform", async (req, res) => {
+    if (!fs.existsSync(MEDIA_DIR_PREFIX)) {
+        fs.mkdirSync(MEDIA_DIR_PREFIX)
+    }
     try {
         const { railResult }: { railResult: Rail } = req.body
 
