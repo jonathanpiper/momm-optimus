@@ -2,12 +2,7 @@ import express from "express"
 import cors from "cors"
 import bodyParser from "body-parser"
 import { logger } from "./utils/helper.js"
-// import { emptyDirSync } from "fs-extra"
 import { createServer } from "http"
-
-import * as url from "url"
-// const __filename = url.fileURLToPath(import.meta.url)
-const __dirname = url.fileURLToPath(new URL(".", import.meta.url))
 import 'dotenv/config'
 
 const app = express()

@@ -1,18 +1,58 @@
-import { Request, Response} from 'express'
+import { Request, Response } from "express"
 import { downloadFile, logger } from "../../utils/helper.js"
-import * as url from "url"
-const __dirname = url.fileURLToPath(new URL(".", import.meta.url))
 import fs from "fs"
 import type { Rail, Dwell, Content, Item, InlineAudioClip, StoryMedia, MediaItem, ArtifactImage } from "../../types/index.js"
+import appRootPath from "app-root-path"
+import { homedir, ssh } from "../../utils/ssh.js"
+import "dotenv/config"
 
 let mediaDir: string
 let filesNeeded: string[] = []
 
-const IMAGE_URL_PREFIX = process.env.PRODUCTION_IMAGE_URL || ''
-const MEDIA_URL_PREFIX = process.env.PRODUCTION_FILE_URL || ''
-let MEDIA_DIR_PREFIX = `${__dirname}files/`
+const galleriesArray = ["gallery1", "gallery2", "gallery4"]
 
-export const shrinkAndDownload = async ({ media, flag = "", height }: { media: string; flag?: string; height?: number }) => {
+const IMAGE_URL_PREFIX = process.env.PRODUCTION_IMAGE_URL || ""
+const MEDIA_URL_PREFIX = process.env.PRODUCTION_FILE_URL || ""
+let MEDIA_DIR_PREFIX = `${appRootPath.path}/files/`
+
+const connectSSH = async (railDefinition: { hostname: string; ip: string }) => {
+    if (fs.readdirSync(`${MEDIA_DIR_PREFIX}${railDefinition.hostname}`).length === 0) {
+        logger.warn(`Attempted to deploy rail ${railDefinition.hostname} without any files present.`)
+        return "noFilesPresent"
+    }
+    ssh.connect({
+        host: railDefinition.ip,
+        username: process.env.RAILADMIN_USERNAME,
+        privateKeyPath: `${homedir}/.ssh/id_rsa`,
+    }).then(() => {
+        const failed: string[] = []
+        const successful: string[] = []
+
+        ssh.putDirectory(`${MEDIA_DIR_PREFIX}${railDefinition.hostname}`, "/Users/railadmin/files", {
+            recursive: true,
+            concurrency: 1,
+            tick: function (localPath, remotePath, error) {
+                if (error) {
+                    failed.push(localPath)
+                    console.log("fail", localPath)
+                } else {
+                    successful.push(localPath)
+                    console.log("success", localPath)
+                }
+            },
+        }).then((status) => {
+            if (status) {
+                logger.info(`Directory transfer for ${railDefinition.hostname} successful.`)
+                return "success"
+            } else {
+                logger.error(`Directory transfer for ${railDefinition.hostname} failed. The following files did not transfer: ${failed.join(", ")}`)
+                return "fileTransferErrors"
+            }
+        })
+    })
+}
+
+const shrinkAndDownload = async ({ media, flag = "", height }: { media: string; flag?: string; height?: number }) => {
     let query: string = ""
     let extension: string = ""
     switch (flag) {
@@ -61,12 +101,61 @@ export const shrinkAndDownload = async ({ media, flag = "", height }: { media: s
     }
 }
 
+const sanityColorToRGB = (sanityColorObject: any) => {
+    const rgb = sanityColorObject.rgb
+    return `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`
+}
+
+const createConfigurationObject = (incomingConfigObject: any) => {
+    const transformConfigObject: any = {
+        gallery1: {},
+        gallery2: {},
+        gallery4: {},
+        "dr-title-font": incomingConfigObject.drTitleFont,
+        "dr-body-font": incomingConfigObject.drBodyFont,
+    }
+    galleriesArray.forEach((g) => {
+        transformConfigObject[g].color = sanityColorToRGB(incomingConfigObject[g].color)
+        transformConfigObject[g].activeColor = sanityColorToRGB(incomingConfigObject[g].activeColor)
+        if (incomingConfigObject[g].hasOwnProperty("dateRangeColor")) {
+            transformConfigObject[g].dateRangeColor = sanityColorToRGB(incomingConfigObject[g].dateRangeColor)
+        }
+    })
+    return transformConfigObject
+}
+
 export const status = async (req: Request, res: Response) => {
     res.status(200).send("Optimus is online. 🚀")
 }
 
 export const deploy = async (req: Request, res: Response) => {
-    console.log(req.body)
+    if (!req.body.railIdentifier) {
+        res.status(400).send("Malformed or missing rail identifier.")
+        logger.warn(`Received invalid or missing rail identifier.`)
+        return
+    }
+    const railIdentifier = req.body.railIdentifier
+    const DREX_URL = process.env.DREX_SERVER_URL
+    let railsConfig
+    try {
+        const railsReq = await fetch(`${DREX_URL}rails`)
+        railsConfig = await railsReq.json()
+    } catch (err) {
+        logger.error(err)
+    }
+    const railDefinition = railsConfig.filter((r: any) => r.name === railIdentifier)[0]
+    if (!railDefinition) {
+        res.status(500).send(`Could not locate a rail with identifier ${railIdentifier}.`)
+        logger.error(`Could not locate rail definition with identifier ${railIdentifier}.`)
+        return
+    }
+    const transferStatus = await connectSSH(railDefinition.controlDevice)
+    switch (transferStatus) {
+        case "noFilesPresent":
+            res.status(500).send(`No files found for ${railIdentifier}; has a step been missed?`)
+            return
+    }
+    res.status(200).send(`You asked for ${railIdentifier}`)
 }
 
 export const transform = async (req: Request, res: Response) => {
@@ -74,13 +163,22 @@ export const transform = async (req: Request, res: Response) => {
         fs.mkdirSync(MEDIA_DIR_PREFIX)
     }
     try {
-        const { railResult }: { railResult: Rail } = req.body
+        const railResult = req.body.rail
+        const incomingConfigResult = req.body.config
 
         if (!railResult) {
             logger.warn("No incoming rail content detected.")
             res.status(400).send("Malformed or incomplete rail content.")
             return
         }
+
+        if (!incomingConfigResult) {
+            logger.warn("No incoming configuration detected.")
+            res.status(400).send("Malformed or incomplete rail configuration.")
+            return
+        }
+
+        const configResult = createConfigurationObject(incomingConfigResult)
 
         try {
             mediaDir = MEDIA_DIR_PREFIX + `${railResult.identifier}/`
@@ -158,31 +256,34 @@ export const transform = async (req: Request, res: Response) => {
                     }
                     if (content._type === "media") {
                         content.items = await Promise.all(
-                            content.items.map(async (category: Item) => {
-                                if (category === null) throw `Missing content definition in ${content.title}.`
-                                if (!category?.heroImage) throw `No hero image defined for media category ${category._type}.`
-                                category.heroImage = category.heroImage
-                                    ? await shrinkAndDownload({
-                                          media: category.heroImage,
-                                      })
-                                    : ""
-                                category.items = category.items
-                                    ? await Promise.all(
-                                          category.items.map(async (item: MediaItem) => {
-                                              if (item === null || !item.thumbnail || !item.clip) throw `Malformed item definition in ${category._type}.`
-                                              item.thumbnail = await shrinkAndDownload({
-                                                  media: item.thumbnail,
-                                                  flag: "thumbnail",
-                                              })
-                                              item.clip = await shrinkAndDownload({
-                                                  media: item.clip,
-                                              })
-                                              return item
+                            content.items
+                                .filter((i) => i !== null)
+                                .map(async (category: Item) => {
+                                    if (!category?.heroImage) throw `No hero image defined for media category ${category._type}.`
+                                    category.heroImage = category.heroImage
+                                        ? await shrinkAndDownload({
+                                              media: category.heroImage,
                                           })
-                                      )
-                                    : []
-                                return category
-                            })
+                                        : ""
+                                    category.items = category.items
+                                        ? await Promise.all(
+                                              category.items.map(async (item: MediaItem) => {
+                                                  if (item === null || !item.clip) throw `Malformed item definition in ${category._type}.`
+                                                  if (item.thumbnail) {
+                                                      item.thumbnail = await shrinkAndDownload({
+                                                          media: item.thumbnail,
+                                                          flag: "thumbnail",
+                                                      })
+                                                  }
+                                                  item.clip = await shrinkAndDownload({
+                                                      media: item.clip,
+                                                  })
+                                                  return item
+                                              })
+                                          )
+                                        : []
+                                    return category
+                                })
                         )
                     }
                     if (content._type === "artifacts") {
@@ -219,16 +320,21 @@ export const transform = async (req: Request, res: Response) => {
         try {
             fs.writeFile(`${mediaDir}rail.json`, JSON.stringify(railResult), (err) => {
                 if (err) throw err
-                filesNeeded.push(`${mediaDir}rail.json`)
+                fs.chmod(`${mediaDir}rail.json`, 0o644, () => {})
                 logger.info(`Rail definition for ${railResult.identifier} written to rail.json.`)
-                fs.readdir(mediaDir, (err, files) => {
-                    const filesToRemove: string[] = files.filter((n: string) => {
-                        return !filesNeeded.includes(`${mediaDir}${n}`)
-                    })
-                    filesToRemove.forEach((n: string) => {
-                        logger.info(`${n} is no longer needed, deleting.`)
-                        fs.unlinkSync(`${mediaDir}${n}`)
-                    })
+            })
+            fs.writeFile(`${mediaDir}config.json`, JSON.stringify(configResult), (err) => {
+                if (err) throw err
+                fs.chmod(`${mediaDir}config.json`, 0o644, () => {})
+                logger.info(`Configuration for ${railResult.identifier} written to config.json.`)
+            })
+            fs.readdir(mediaDir, (err, files) => {
+                const filesToRemove: string[] = files.filter((n: string) => {
+                    return (!filesNeeded.includes(`${mediaDir}${n}`) && (![`rail.json`, `config.json`].includes(n)))
+                })
+                filesToRemove.forEach((n: string) => {
+                    logger.info(`${n} is no longer needed, deleting.`)
+                    fs.unlinkSync(`${mediaDir}${n}`)
                 })
             })
         } catch (err) {

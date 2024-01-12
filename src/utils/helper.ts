@@ -28,6 +28,7 @@ export async function downloadFile(url: string, targetFile: string) {
 
                 // save the file to disk
                 const fileWriter = fs.createWriteStream(targetFile).on("finish", () => {
+                    fs.chmod(targetFile, 0o644, () => {})
                     resolve({})
                 })
 
