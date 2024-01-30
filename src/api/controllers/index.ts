@@ -15,41 +15,110 @@ const IMAGE_URL_PREFIX = process.env.PRODUCTION_IMAGE_URL || ""
 const MEDIA_URL_PREFIX = process.env.PRODUCTION_FILE_URL || ""
 let MEDIA_DIR_PREFIX = `${appRootPath.path}/files/`
 
-const connectSSH = async (railDefinition: { hostname: string; ip: string }) => {
-    if (fs.readdirSync(`${MEDIA_DIR_PREFIX}${railDefinition.hostname}`).length === 0) {
-        logger.warn(`Attempted to deploy rail ${railDefinition.hostname} without any files present.`)
-        return "noFilesPresent"
-    }
-    ssh.connect({
-        host: railDefinition.ip,
-        username: process.env.RAILADMIN_USERNAME,
-        privateKeyPath: `${homedir}/.ssh/id_rsa`,
-    }).then(() => {
-        const failed: string[] = []
-        const successful: string[] = []
-
-        ssh.putDirectory(`${MEDIA_DIR_PREFIX}${railDefinition.hostname}`, "/Users/railadmin/files", {
-            recursive: true,
-            concurrency: 1,
-            tick: function (localPath, remotePath, error) {
-                if (error) {
-                    failed.push(localPath)
-                    console.log("fail", localPath)
-                } else {
-                    successful.push(localPath)
-                    console.log("success", localPath)
-                }
-            },
-        }).then((status) => {
-            if (status) {
-                logger.info(`Directory transfer for ${railDefinition.hostname} successful.`)
-                return "success"
+const convertDirToTransferObject = (dirToRead: string, remotePath: string, exclusions?: string[]): { local: string; remote: string }[] => {
+    const files = fs.readdirSync(dirToRead)
+    const filesForSSHTransfer = files
+        .filter((f: string) => {
+            if (exclusions) {
+                return f.substring(0) !== "." && exclusions.indexOf(f) === -1
             } else {
-                logger.error(`Directory transfer for ${railDefinition.hostname} failed. The following files did not transfer: ${failed.join(", ")}`)
-                return "fileTransferErrors"
+                return f.substring(0) !== "."
             }
         })
-    })
+        .map((f: string) => {
+            return { local: `${dirToRead}/${f}`, remote: `${remotePath}/${f}` }
+        })
+    return filesForSSHTransfer
+}
+
+const connectSSH = async (railDefinition: { hostname: string; ip: string }) => {
+    let returnValue: string = ""
+    if (fs.readdirSync(`${MEDIA_DIR_PREFIX}${railDefinition.hostname}`).length === 0) {
+        logger.warn(`Attempted to deploy rail ${railDefinition.hostname} without any files present.`)
+        returnValue = "noFilesPresent"
+    } else {
+        await ssh.connect({
+            host: railDefinition.ip,
+            username: process.env.RAILADMIN_USERNAME,
+            privateKeyPath: `${homedir}/.ssh/id_rsa`,
+        })
+
+        const remoteFileList = (await ssh.exec(`ls`, [`${process.env.REMOTE_PATH}/files`])).split("\n").filter((f: string) => {
+            return f.indexOf(".json") === -1
+        })
+
+        const localFiles = convertDirToTransferObject(`${MEDIA_DIR_PREFIX}${railDefinition.hostname}`, `${process.env.REMOTE_PATH}/files`, remoteFileList)
+        const globalFiles = convertDirToTransferObject(`${MEDIA_DIR_PREFIX}global`, `${process.env.REMOTE_PATH}/files`)
+        const filesForTransfer = [...localFiles, ...globalFiles]
+
+        await ssh.putFiles(filesForTransfer).then(
+            () => {
+                returnValue = "success"
+                logger.info(`Files transfered to ${railDefinition.hostname} computer.`)
+            },
+            (error) => {
+                logger.error(error)
+            }
+        )
+
+        // ssh.putDirectory(`${MEDIA_DIR_PREFIX}${railDefinition.hostname}`, `${process.env.REMOTE_PATH}/files`, {
+        //     recursive: true,
+        //     concurrency: 1,
+        //     tick: function (localPath, error) {
+        //         if (error) {
+        //             failed.push(localPath)
+        //             console.log("fail", localPath)
+        //         } else {
+        //             successful.push(localPath)
+        //             console.log("success", localPath)
+        //         }
+        //     },
+        // })
+        //     .then(
+        //         () => {
+        //             ssh.putDirectory(`${MEDIA_DIR_PREFIX}global`, `${process.env.REMOTE_PATH}/files`, {
+        //                 recursive: true,
+        //                 concurrency: 1,
+        //                 tick: function (localPath, remotePath, error) {
+        //                     if (error) {
+        //                         failed.push(localPath)
+        //                         console.log("fail", localPath)
+        //                     } else {
+        //                         successful.push(localPath)
+        //                         console.log("success", localPath)
+        //                     }
+        //                 },
+        //             })
+        //         },
+        //         (error) => {
+        //             logger.error(`Directory transfer for ${railDefinition.hostname} failed with error ${error}.`)
+        //             returnValue = "fileTransferErrors"
+        //         }
+        //     )
+        //     .then(
+        //         () => {
+        //             logger.info(`Directory transfer for ${railDefinition.hostname} successful.`)
+        //             returnValue = "success"
+        //         },
+        //         (error) => {
+        //             logger.error(
+        //                 `Directory transfer for ${
+        //                     railDefinition.hostname
+        //                 } failed with error ${error}. The following files did not transfer: ${failed.join(", ")}`
+        //             )
+        //             returnValue = "fileTransferErrors"
+        //         }
+        //     )
+        // return "successT"
+        //     },
+        //     (error) => {
+        //         logger.error(error)
+        //         returnValue = "railConnectionError"
+        //     }
+        // )
+        // returnValue = "success"
+    }
+    return returnValue || "hi"
 }
 
 const shrinkAndDownload = async ({ media, flag = "", height }: { media: string; flag?: string; height?: number }) => {
@@ -149,13 +218,17 @@ export const deploy = async (req: Request, res: Response) => {
         logger.error(`Could not locate rail definition with identifier ${railIdentifier}.`)
         return
     }
-    const transferStatus = await connectSSH(railDefinition.controlDevice)
+    const transferStatus: string = await connectSSH(railDefinition.controlDevice)
     switch (transferStatus) {
         case "noFilesPresent":
             res.status(500).send(`No files found for ${railIdentifier}; has a step been missed?`)
-            return
+            break
+        case "railConnectionError":
+            res.status(500).send(`Couldn't connect to rail ${railIdentifier}. Verify SSH access from Railhub.`)
+            break
+        case "success":
+            res.status(200).send(`Files successfully copied to ${railIdentifier} computer.`)
     }
-    res.status(200).send(`You asked for ${railIdentifier}`)
 }
 
 export const transform = async (req: Request, res: Response) => {
@@ -330,7 +403,7 @@ export const transform = async (req: Request, res: Response) => {
             })
             fs.readdir(mediaDir, (err, files) => {
                 const filesToRemove: string[] = files.filter((n: string) => {
-                    return (!filesNeeded.includes(`${mediaDir}${n}`) && (![`rail.json`, `config.json`].includes(n)))
+                    return !filesNeeded.includes(`${mediaDir}${n}`) && ![`rail.json`, `config.json`].includes(n)
                 })
                 filesToRemove.forEach((n: string) => {
                     logger.info(`${n} is no longer needed, deleting.`)
