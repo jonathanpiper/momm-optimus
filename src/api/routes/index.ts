@@ -1,5 +1,5 @@
 import { Router } from "express"
-import { status, deploy, transform } from "../controllers"
+import { status, deploy, transform } from "../controllers/index.js"
 
 const router = Router()
 

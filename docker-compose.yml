@@ -1,0 +1,17 @@
+version: "1"
+services:
+  optimus:
+    # networks:
+    #   - api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # environment:
+    #   ENV_NAME: dev
+    ports:
+      - "3000:3000"
+
+# networks:
+#     api:
+#         name: optimus
+#         external: true

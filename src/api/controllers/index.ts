@@ -4,6 +4,7 @@ import fs from "fs"
 import type { Rail, Dwell, Content, Item, InlineAudioClip, StoryMedia, MediaItem, ArtifactImage } from "../../types/index.js"
 import appRootPath from "app-root-path"
 import { homedir, ssh } from "../../utils/ssh.js"
+import isDocker from "is-docker"
 import "dotenv/config"
 
 let mediaDir: string
@@ -31,94 +32,41 @@ const convertDirToTransferObject = (dirToRead: string, remotePath: string, exclu
     return filesForSSHTransfer
 }
 
-const connectSSH = async (railDefinition: { hostname: string; ip: string }) => {
+const transferFilesToRailComputer = async (railDefinition: { hostname: string; ip: string }) => {
     let returnValue: string = ""
     if (fs.readdirSync(`${MEDIA_DIR_PREFIX}${railDefinition.hostname}`).length === 0) {
         logger.warn(`Attempted to deploy rail ${railDefinition.hostname} without any files present.`)
         returnValue = "noFilesPresent"
     } else {
-        await ssh.connect({
-            host: railDefinition.ip,
-            username: process.env.RAILADMIN_USERNAME,
-            privateKeyPath: `${homedir}/.ssh/id_rsa`,
-        })
+        try {
+            await ssh.connect({
+                host: railDefinition.ip,
+                username: process.env.RAILADMIN_USERNAME,
+                privateKeyPath: `${isDocker() ? '/app/extmount' : homedir}/.ssh/id_rsa`,
+            })
 
-        const remoteFileList = (await ssh.exec(`ls`, [`${process.env.REMOTE_PATH}/files`])).split("\n").filter((f: string) => {
-            return f.indexOf(".json") === -1
-        })
+            const remoteFileList = (await ssh.exec(`ls`, [`${process.env.REMOTE_PATH}/files`])).split("\n").filter((f: string) => {
+                return f.indexOf(".json") === -1
+            })
 
-        const localFiles = convertDirToTransferObject(`${MEDIA_DIR_PREFIX}${railDefinition.hostname}`, `${process.env.REMOTE_PATH}/files`, remoteFileList)
-        const globalFiles = convertDirToTransferObject(`${MEDIA_DIR_PREFIX}global`, `${process.env.REMOTE_PATH}/files`)
-        const filesForTransfer = [...localFiles, ...globalFiles]
+            const localFiles = convertDirToTransferObject(`${MEDIA_DIR_PREFIX}${railDefinition.hostname}`, `${process.env.REMOTE_PATH}/files`, remoteFileList)
+            const globalFiles = convertDirToTransferObject(`${MEDIA_DIR_PREFIX}global`, `${process.env.REMOTE_PATH}/files`)
+            const filesForTransfer = [...localFiles, ...globalFiles]
 
-        await ssh.putFiles(filesForTransfer).then(
-            () => {
-                returnValue = "success"
-                logger.info(`Files transfered to ${railDefinition.hostname} computer.`)
-            },
-            (error) => {
-                logger.error(error)
-            }
-        )
-
-        // ssh.putDirectory(`${MEDIA_DIR_PREFIX}${railDefinition.hostname}`, `${process.env.REMOTE_PATH}/files`, {
-        //     recursive: true,
-        //     concurrency: 1,
-        //     tick: function (localPath, error) {
-        //         if (error) {
-        //             failed.push(localPath)
-        //             console.log("fail", localPath)
-        //         } else {
-        //             successful.push(localPath)
-        //             console.log("success", localPath)
-        //         }
-        //     },
-        // })
-        //     .then(
-        //         () => {
-        //             ssh.putDirectory(`${MEDIA_DIR_PREFIX}global`, `${process.env.REMOTE_PATH}/files`, {
-        //                 recursive: true,
-        //                 concurrency: 1,
-        //                 tick: function (localPath, remotePath, error) {
-        //                     if (error) {
-        //                         failed.push(localPath)
-        //                         console.log("fail", localPath)
-        //                     } else {
-        //                         successful.push(localPath)
-        //                         console.log("success", localPath)
-        //                     }
-        //                 },
-        //             })
-        //         },
-        //         (error) => {
-        //             logger.error(`Directory transfer for ${railDefinition.hostname} failed with error ${error}.`)
-        //             returnValue = "fileTransferErrors"
-        //         }
-        //     )
-        //     .then(
-        //         () => {
-        //             logger.info(`Directory transfer for ${railDefinition.hostname} successful.`)
-        //             returnValue = "success"
-        //         },
-        //         (error) => {
-        //             logger.error(
-        //                 `Directory transfer for ${
-        //                     railDefinition.hostname
-        //                 } failed with error ${error}. The following files did not transfer: ${failed.join(", ")}`
-        //             )
-        //             returnValue = "fileTransferErrors"
-        //         }
-        //     )
-        // return "successT"
-        //     },
-        //     (error) => {
-        //         logger.error(error)
-        //         returnValue = "railConnectionError"
-        //     }
-        // )
-        // returnValue = "success"
+            await ssh.putFiles(filesForTransfer).then(
+                () => {
+                    returnValue = "success"
+                    logger.info(`Files transfered to ${railDefinition.hostname} computer.`)
+                },
+                (error) => {
+                    logger.error(error)
+                }
+            )
+        } catch (err) {
+            logger.error(err)
+        }
     }
-    return returnValue || "hi"
+    return returnValue
 }
 
 const shrinkAndDownload = async ({ media, flag = "", height }: { media: string; flag?: string; height?: number }) => {
@@ -211,6 +159,8 @@ export const deploy = async (req: Request, res: Response) => {
         railsConfig = await railsReq.json()
     } catch (err) {
         logger.error(err)
+        res.status(500).send(`Could not reach DREX server. Please very it is available at ${DREX_URL}.`)
+        return
     }
     const railDefinition = railsConfig.filter((r: any) => r.name === railIdentifier)[0]
     if (!railDefinition) {
@@ -218,7 +168,7 @@ export const deploy = async (req: Request, res: Response) => {
         logger.error(`Could not locate rail definition with identifier ${railIdentifier}.`)
         return
     }
-    const transferStatus: string = await connectSSH(railDefinition.controlDevice)
+    const transferStatus: string = await transferFilesToRailComputer(railDefinition.controlDevice)
     switch (transferStatus) {
         case "noFilesPresent":
             res.status(500).send(`No files found for ${railIdentifier}; has a step been missed?`)
@@ -422,4 +372,5 @@ export const transform = async (req: Request, res: Response) => {
         logger.error(`Could not complete rail distribution. Error: ${err}`)
         res.status(500).send(`Unable to prepare rail distribution. Error: ${err}`)
     }
+    console.log(filesNeeded)
 }
