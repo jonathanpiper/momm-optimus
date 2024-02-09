@@ -39,10 +39,11 @@ const transferFilesToRailComputer = async (railDefinition: { hostname: string; i
         returnValue = "noFilesPresent"
     } else {
         try {
+            logger.info(isDocker() ? '/app/privatekeys/id_rsa' : `${homedir}/.ssh/id_rsa`)
             await ssh.connect({
                 host: railDefinition.ip,
                 username: process.env.RAILADMIN_USERNAME,
-                privateKeyPath: `${isDocker() ? '/app/extmount' : homedir}/.ssh/id_rsa`,
+                privateKeyPath: isDocker() ? '/app/privatekeys/id_rsa' : `${homedir}/.ssh/id_rsa`,
             })
 
             const remoteFileList = (await ssh.exec(`ls`, [`${process.env.REMOTE_PATH}/files`])).split("\n").filter((f: string) => {
@@ -59,10 +60,12 @@ const transferFilesToRailComputer = async (railDefinition: { hostname: string; i
                     logger.info(`Files transfered to ${railDefinition.hostname} computer.`)
                 },
                 (error) => {
+                    returnValue = "transferFailed"
                     logger.error(error)
                 }
             )
         } catch (err) {
+            returnValue = "failure"
             logger.error(err)
         }
     }
@@ -176,8 +179,15 @@ export const deploy = async (req: Request, res: Response) => {
         case "railConnectionError":
             res.status(500).send(`Couldn't connect to rail ${railIdentifier}. Verify SSH access from Railhub.`)
             break
+        case "transferFailed":
+            res.status(500).send(`Couldn't transfer files to rail ${railIdentifier}. Verify SSH access from Railhub.`)
+            break
         case "success":
             res.status(200).send(`Files successfully copied to ${railIdentifier} computer.`)
+            break
+        default:
+            res.status(500).send(`Unknown error transferring to ${railIdentifier}. Please check logs for more details.`)
+            break
     }
 }
 
