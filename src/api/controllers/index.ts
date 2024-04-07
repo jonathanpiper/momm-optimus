@@ -6,6 +6,9 @@ import appRootPath from "app-root-path"
 import { homedir, ssh } from "../../utils/ssh.js"
 import isDocker from "is-docker"
 import "dotenv/config"
+import { createClient } from "@sanity/client"
+import { FetchCompleteRailByIdentifier } from "../queries/FetchCompleteRailByIdentifier.js"
+import { FetchRailConfig } from "../queries/FetchRailConfig.js"
 
 let mediaDir: string
 let filesNeeded: string[] = []
@@ -39,11 +42,10 @@ const transferFilesToRailComputer = async (railDefinition: { hostname: string; i
         returnValue = "noFilesPresent"
     } else {
         try {
-            logger.info(isDocker() ? '/app/privatekeys/id_rsa' : `${homedir}/.ssh/id_rsa`)
             await ssh.connect({
                 host: railDefinition.ip,
                 username: process.env.RAILADMIN_USERNAME,
-                privateKeyPath: isDocker() ? '/app/privatekeys/id_rsa' : `${homedir}/.ssh/id_rsa`,
+                privateKeyPath: isDocker() ? "/app/privatekeys/id_ed25519" : `${homedir}/.ssh/id_ed25519`,
             })
 
             const remoteFileList = (await ssh.exec(`ls`, [`${process.env.REMOTE_PATH}/files`])).split("\n").filter((f: string) => {
@@ -103,6 +105,7 @@ const shrinkAndDownload = async ({ media, flag = "", height }: { media: string; 
             break
         default:
     }
+    logger.info(media)
     try {
         extension = media.substring(media.lastIndexOf("."))
     } catch (err) {
@@ -189,6 +192,50 @@ export const deploy = async (req: Request, res: Response) => {
             res.status(500).send(`Unknown error transferring to ${railIdentifier}. Please check logs for more details.`)
             break
     }
+}
+
+export const preview = async (req: Request, res: Response) => {
+    if (!req.params.identifier) {
+        res.status(400).send("No identifier specified.")
+        return
+    }
+    if (req.params.identifier.substring(0, 4) !== "rail") {
+        res.status(400).send("Identifier must be in format rail(Gallery)(Position)(Subposition), e.g. 'rail1a1' or 'rail2e'.")
+        return
+    }
+    const identifier = req.params.identifier
+    const client = createClient({
+        projectId: "4udqswqp",
+        dataset: "production",
+        useCdn: false,
+        apiVersion: "2023-10-06",
+    })
+    const config = await client.fetch(FetchRailConfig)
+    const configResult = createConfigurationObject(config)
+    const railResult = await client.fetch(FetchCompleteRailByIdentifier, { id: identifier })
+    railResult.content.map((content: Content) => {
+        if (content._type === "stories") {
+            content.items = content.items.map((item: Item) => {
+                item.storyMedia = item.storyMedia
+                    ? item.storyMedia.map((media: StoryMedia, i: number) => {
+                          if (media.image) {
+                              media.full = media.image
+                              media.thumbnail = media.image + "?h=200"
+                              delete media.image
+                          }
+                          return media
+                      })
+                    : []
+                return item
+            })
+        }
+        if (content._type === "media") {
+            content.items = content.items.filter((item: Item) => {
+                if (item) return item
+            })
+        }
+    })
+    res.status(200).send({ config: configResult, rail: railResult })
 }
 
 export const transform = async (req: Request, res: Response) => {
@@ -327,6 +374,7 @@ export const transform = async (req: Request, res: Response) => {
                                 item.artifactImages = item.artifactImages
                                     ? await Promise.all(
                                           item.artifactImages.map(async (image: ArtifactImage, i: number) => {
+                                              logger.info(`Debugging null image. ${item.artifactNumber}, ${image.image}`)
                                               image.image = await shrinkAndDownload({
                                                   media: image.image,
                                                   flag: "artifact",
@@ -382,5 +430,4 @@ export const transform = async (req: Request, res: Response) => {
         logger.error(`Could not complete rail distribution. Error: ${err}`)
         res.status(500).send(`Unable to prepare rail distribution. Error: ${err}`)
     }
-    console.log(filesNeeded)
 }
